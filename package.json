@@ -49,5 +49,15 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2"
-  }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "workflow",
+    "canvas",
+    "deepseek-harness",
+    "react-flow",
+    "dag",
+    "agent",
+    "visual-editor"
+  ]
 }
