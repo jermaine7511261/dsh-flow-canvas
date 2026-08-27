@@ -1,0 +1,137 @@
+{
+  "id": "wf-search-research",
+  "name": "深度搜索研究工作流",
+  "description": "多轮搜索 → 分析 → 条件判断 → 综合报告",
+  "version": 1,
+  "createdAt": 1724630000000,
+  "updatedAt": 1724630000000,
+  "author": "dsh-flow-canvas",
+  "tags": ["search", "research", "multi-agent"],
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "start",
+      "position": { "x": 50, "y": 250 },
+      "data": {
+        "type": "start",
+        "label": "开始",
+        "inputs": { "query": { "type": "string", "description": "搜索关键词" } }
+      }
+    },
+    {
+      "id": "agent-search",
+      "type": "agent",
+      "position": { "x": 250, "y": 250 },
+      "data": {
+        "type": "agent",
+        "label": "网页搜索",
+        "prompt": "使用 web_search 工具搜索关键词 \"{{query}}\"，收集前 10 条结果的标题、URL 和摘要。返回结构化的搜索结果列表。",
+        "model": "deepseek-pro",
+        "tools": ["web_search", "web_extract"],
+        "writePaths": [],
+        "readOnly": true,
+        "maxSteps": 5
+      }
+    },
+    {
+      "id": "agent-analyze",
+      "type": "agent",
+      "position": { "x": 500, "y": 250 },
+      "data": {
+        "type": "agent",
+        "label": "结果分析",
+        "prompt": "分析搜索结果，提取关键信息：1) 每条结果的相关性评分(0-10) 2) 核心观点摘要 3) 信息覆盖度评估 4) 是否有明显信息缺口。输出 JSON 格式的分析报告。",
+        "model": "deepseek-pro",
+        "tools": ["read_file"],
+        "writePaths": [],
+        "readOnly": true,
+        "maxSteps": 3
+      }
+    },
+    {
+      "id": "condition-1",
+      "type": "condition",
+      "position": { "x": 750, "y": 250 },
+      "data": {
+        "type": "condition",
+        "label": "信息充足?",
+        "conditionType": "string_contains",
+        "conditionValue": "信息覆盖度高"
+      }
+    },
+    {
+      "id": "agent-refine",
+      "type": "agent",
+      "position": { "x": 1000, "y": 100 },
+      "data": {
+        "type": "agent",
+        "label": "补充搜索",
+        "prompt": "根据分析报告中的信息缺口，使用 web_search 搜索补充信息。重点关注缺失的角度和数据。返回补充的搜索结果。",
+        "model": "deepseek-pro",
+        "tools": ["web_search", "web_extract"],
+        "writePaths": [],
+        "readOnly": true,
+        "maxSteps": 3
+      }
+    },
+    {
+      "id": "agent-synthesize",
+      "type": "agent",
+      "position": { "x": 1200, "y": 250 },
+      "data": {
+        "type": "agent",
+        "label": "综合报告",
+        "prompt": "综合所有搜索结果和分析报告，生成一份结构化的研究报告：\n1. 执行摘要 (200字)\n2. 核心发现 (3-5个要点)\n3. 详细分析\n4. 数据来源列表\n5. 结论与建议\n格式：Markdown",
+        "model": "deepseek-pro",
+        "tools": ["write_file"],
+        "writePaths": ["research/"],
+        "readOnly": false,
+        "maxSteps": 5
+      }
+    },
+    {
+      "id": "agent-quality",
+      "type": "agent",
+      "position": { "x": 1450, "y": 250 },
+      "data": {
+        "type": "agent",
+        "label": "质量审查",
+        "prompt": "审查研究报告的质量：\n1. 事实准确性\n2. 逻辑连贯性\n3. 信息完整性\n4. 是否有遗漏的重要观点\n给出质量评分(0-100)和改进建议。",
+        "model": "deepseek-pro",
+        "tools": ["read_file"],
+        "writePaths": [],
+        "readOnly": true,
+        "maxSteps": 3
+      }
+    },
+    {
+      "id": "end-1",
+      "type": "end",
+      "position": { "x": 1700, "y": 250 },
+      "data": {
+        "type": "end",
+        "label": "完成",
+        "outputs": { "report": { "type": "string", "description": "最终研究报告" } }
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "start-1", "target": "agent-search" },
+    { "id": "e2", "source": "agent-search", "target": "agent-analyze" },
+    { "id": "e3", "source": "agent-analyze", "target": "condition-1" },
+    { "id": "e4", "source": "condition-1", "target": "agent-refine", "sourceHandle": "false" },
+    { "id": "e5", "source": "condition-1", "target": "agent-synthesize", "sourceHandle": "true" },
+    { "id": "e6", "source": "agent-refine", "target": "agent-synthesize" },
+    { "id": "e7", "source": "agent-synthesize", "target": "agent-quality" },
+    { "id": "e8", "source": "agent-quality", "target": "end-1" }
+  ],
+  "viewport": { "x": 0, "y": 0, "zoom": 0.8 },
+  "variables": [
+    { "name": "query", "type": "string", "description": "搜索关键词", "defaultValue": "AI agent frameworks 2024" }
+  ],
+  "metadata": {
+    "difficulty": "intermediate",
+    "estimatedTokens": 5000,
+    "executionTime": "2-5分钟"
+  }
+}
