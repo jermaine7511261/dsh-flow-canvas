@@ -12,7 +12,7 @@ Drag and drop nodes to orchestrate **agent tasks, tool calls, conditional branch
 - **Real-time** node configuration with properties panel
 - **Execution log** panel with status tracking
 
-### 🏗️ Core Engine (参考 GM-HZ/dsh-dag-workflow)
+### 🏗️ Core Engine
 - **10 core node definitions**: start, end, condition, tool, agent, script, human-approval, subworkflow, foreach, parallel
 - **DAG compiler**: Topological sort, cycle detection, semantic hashing
 - **Execution engine**: Ready-node scheduling, concurrency control, abort support
@@ -120,6 +120,13 @@ src/
 
 ### Extended (10+ types)
 Agent, Tool, Code, HTTP, Condition, Variable, SubFlow, Loop, Iteration, Team, Merge, Trigger (Cron/Webhook/FileWatch/GitEvent)
+
+## Credits
+
+Architecture inspired by:
+- [GM-HZ/dsh-dag-workflow](https://github.com/GM-HZ/dsh-dag-workflow) — DAG engine, compiler, node definitions
+- [PiedPiper911/dsh-workflow-canvas](https://github.com/PiedPiper911/dsh-workflow-canvas) — Transport-agnostic model
+- [Lhy723/dsh-agent-canvas](https://github.com/Lhy723/dsh-agent-canvas) — Agent visualization
 
 ## License
 
