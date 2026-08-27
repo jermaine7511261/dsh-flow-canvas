@@ -121,13 +121,6 @@ src/
 ### Extended (10+ types)
 Agent, Tool, Code, HTTP, Condition, Variable, SubFlow, Loop, Iteration, Team, Merge, Trigger (Cron/Webhook/FileWatch/GitEvent)
 
-## Credits
-
-Architecture inspired by:
-- [GM-HZ/dsh-dag-workflow](https://github.com/GM-HZ/dsh-dag-workflow) — DAG engine, compiler, node definitions
-- [PiedPiper911/dsh-workflow-canvas](https://github.com/PiedPiper911/dsh-workflow-canvas) — Transport-agnostic model
-- [Lhy723/dsh-agent-canvas](https://github.com/Lhy723/dsh-agent-canvas) — Agent visualization
-
 ## License
 
 MIT
