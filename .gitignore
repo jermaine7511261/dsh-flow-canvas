@@ -1,0 +1,14 @@
+node_modules/
+lib/
+client/
+.build/
+*.db
+.env
+*.log
+dist/
+.DS_Store
+Thumbs.db
+.build-entry.mjs
+.build-server-entry.ts
+.patch-*.cjs
+.build/
