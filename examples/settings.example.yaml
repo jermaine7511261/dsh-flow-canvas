@@ -1,0 +1,58 @@
+# dsh-flow-canvas 配置示例
+# 复制此文件内容到 ~/.dsh/settings.yaml
+
+flow-canvas:
+  # 存储配置
+  storage:
+    path: "~/.dsh/workflows"
+    format: "json"
+    autoSave: true
+    autoSaveInterval: 30000
+
+  # 执行配置
+  execution:
+    defaultModel: "mimo-v2.5"
+    defaultProvider: "opencode-go"
+    allowedTools:
+      - read_file
+      - write_file
+      - bash
+      - search
+    writePaths:
+      - "src/"
+      - "tests/"
+    readOnly: false
+    maxSteps: 50
+    timeout: 300000
+
+  # UI 配置
+  ui:
+    theme: "auto"
+    showMiniMap: true
+    showControls: true
+    snapToGrid: true
+
+  # 自动化配置
+  automation:
+    triggers:
+      manual: true
+      fileWatch:
+        enabled: false
+        paths:
+          - "src/**/*.ts"
+        events:
+          - "change"
+      gitEvent:
+        enabled: false
+        events:
+          - "push"
+    rules: []
+
+  # API 配置
+  api:
+    enabled: true
+    port: 3081
+
+  # 日志配置
+  logging:
+    level: "info"
