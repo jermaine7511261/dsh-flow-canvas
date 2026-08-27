@@ -148,31 +148,9 @@ Agent、工具、代码、HTTP、条件、变量、子工作流、循环、遍�
 | [架构文档](docs/architecture.md) | 三层架构、10 种核心节点、编译流水线、调度语义、Gateway 接口 |
 | [安全边界](docs/security.md) | 权限模型、Secret 处理、能力作用域、资源限制、确定性脚本 |
 | [Workflow Template v1](spec/workflow-template-v1.md) | 工作流模板规范（Envelope、Binding、Edge、Policies） |
-| [CI 配置](.github/workflows/ci.yml) | GitHub Actions CI（测试 + 构建） |
 | [实现状态](docs/implementation-status.md) | 逐项实现对照 |
 | [迭代需求](docs/iteration-requirements-v2.md) | 迭代需求规划 |
-| [竞品分析](docs/competitor-research-v4.md) | 竞品源码级分析 |
-
-## 📊 与 GM-HZ/dsh-dag-workflow 的差距
-
-| 维度 | dsh-flow-canvas | GM-HZ |
-|------|-----------------|-------|
-| 架构 | 三层（core/server/client） | Monorepo 6 包 |
-| 编译器 | 深度校验（可达性、端口、Binding） | 深度校验（可达性、类型兼容） |
-| 引擎 | 持久化 + 恢复 + 事件 + 检查点 | 持久化 + 恢复 + 事件 |
-| 安全 | 确定性表达式 DSL | 确定性表达式 DSL |
-| 持久化 | SQLite（JSON 降级） | SQLite |
-| 测试 | Node.js test runner + CI | 10+ 测试文件 |
-
-详见 [源码对照文档](docs/source-findings.md)。
 
 ## 📄 许可证
 
 MIT
-
-## Credits
-
-Architecture inspired by:
-- [GM-HZ/dsh-dag-workflow](https://github.com/GM-HZ/dsh-dag-workflow) — DAG engine, compiler, node definitions
-- [PiedPiper911/dsh-workflow-canvas](https://github.com/PiedPiper911/dsh-workflow-canvas) — Transport-agnostic model
-- [Lhy723/dsh-agent-canvas](https://github.com/Lhy723/dsh-agent-canvas) — Agent visualization
