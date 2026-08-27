@@ -49,5 +49,25 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2"
-  }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "workflow",
+    "canvas",
+    "deepseek-harness",
+    "react-flow",
+    "dag",
+    "agent",
+    "visual-editor",
+    "deepseek",
+    "deepseek-harness-plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jermaine7511261/dsh-flow-canvas.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jermaine7511261/dsh-flow-canvas/issues"
+  },
+  "homepage": "https://github.com/jermaine7511261/dsh-flow-canvas#readme"
 }
