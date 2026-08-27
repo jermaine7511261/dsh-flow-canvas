@@ -9,7 +9,15 @@ import type {
   WorkflowNodeExecutionResult,
   JsonObject,
   JsonValue,
+  JsonSchema,
 } from './types'
+import {
+  evaluate,
+  filterPredicate,
+  mapTransform,
+  sortComparator,
+  ExpressionError,
+} from './expression'
 
 // ── Start Node ──
 export const startNodeDefinition: WorkflowNodeDefinition = {
@@ -24,6 +32,7 @@ export const startNodeDefinition: WorkflowNodeDefinition = {
   outputPorts: ['success'],
   capabilities: [],
   retry: 'safe',
+  execution: 'activity',
   async execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult> {
     return { outputs: context.workflowInputs }
   },
@@ -42,6 +51,7 @@ export const endNodeDefinition: WorkflowNodeDefinition = {
   outputPorts: ['success'],
   capabilities: [],
   retry: 'safe',
+  execution: 'activity',
   async execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult> {
     return { outputs: context.inputs }
   },
@@ -124,20 +134,22 @@ export const toolNodeDefinition: WorkflowNodeDefinition = {
   outputSchema: { type: 'object' },
   outputPorts: ['success', 'error'],
   capabilities: ['dsh.tools.execute'],
+  dependencyKinds: ['capability'],
   retry: 'safe',
+  execution: 'activity',
   async execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult> {
     const { toolName, args } = context.config as { toolName: string; args: JsonObject }
-    if (!context.toolGateway) {
+    if (!context.services?.tools) {
       throw new Error('Tool gateway not available')
     }
-    const result = await context.toolGateway.execute({
+    const result = await context.services.tools.execute({
       runId: context.nodeId,
       nodeId: context.nodeId,
       name: toolName,
       input: { ...args, ...context.inputs },
       signal: context.signal,
     })
-    return { outputs: result as JsonObject }
+    return { outputs: { result } }
   },
 }
 
@@ -159,23 +171,35 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
       profile: { type: 'string' },
       tools: { type: 'array', items: { type: 'string' } },
       maxSteps: { type: 'number' },
+      label: { type: 'string' },
+      outputSchema: { type: 'object' },
+      maxDepth: { type: 'number' },
     },
   },
   inputSchema: { type: 'object' },
   outputSchema: { type: 'object' },
   outputPorts: ['success', 'error'],
-  capabilities: ['dsh.subagents.execute'],
+  capabilities: ['dsh.subagents.start'],
   retry: 'safe',
   async execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult> {
-    const { provider, prompt } = context.config as { provider: string; prompt: string }
-    if (!context.agentGateway) {
+    const { provider, prompt, label, outputSchema, maxDepth } = context.config as {
+      provider: string
+      prompt: string
+      label?: string
+      outputSchema?: JsonSchema
+      maxDepth?: number
+    }
+    if (!context.services?.agents) {
       throw new Error('Agent gateway not available')
     }
-    const result = await context.agentGateway.execute({
+    const result = await context.services.agents.execute({
       runId: context.nodeId,
       nodeId: context.nodeId,
       provider,
       prompt,
+      label,
+      outputSchema,
+      maxDepth,
       signal: context.signal,
     })
     return { outputs: result as JsonObject }
@@ -207,33 +231,27 @@ export const scriptNodeDefinition: WorkflowNodeDefinition = {
     const { language, code } = context.config as { language: string; code: string }
 
     if (language === 'json') {
-      // JSON 变换：filter, map, sort, merge
+      // JSON 变换：filter, map, sort, merge — using deterministic DSL
       try {
         const transform = JSON.parse(code)
         let result = context.inputs
 
         if (transform.filter) {
+          const predicate = filterPredicate(transform.filter)
           const arr = Array.isArray(result) ? result : [result]
-          result = arr.filter((item: any) => {
-            const fn = new Function('item', `return ${transform.filter}`)
-            return fn(item)
-          }) as any
+          result = arr.filter(predicate) as any
         }
 
         if (transform.map) {
+          const mapper = mapTransform(transform.map)
           const arr = Array.isArray(result) ? result : [result]
-          result = arr.map((item: any) => {
-            const fn = new Function('item', `return ${transform.map}`)
-            return fn(item)
-          }) as any
+          result = arr.map(mapper) as any
         }
 
         if (transform.sort) {
-          const arr = Array.isArray(result) ? result : [result]
-          result = arr.sort((a: any, b: any) => {
-            const fn = new Function('a', 'b', `return ${transform.sort}`)
-            return fn(a, b)
-          }) as any
+          const comparator = sortComparator(transform.sort)
+          const arr = Array.isArray(result) ? result : [...result] // avoid mutating input
+          result = arr.sort(comparator) as any
         }
 
         if (transform.merge) {
@@ -242,18 +260,21 @@ export const scriptNodeDefinition: WorkflowNodeDefinition = {
 
         return { outputs: result as JsonObject }
       } catch (error) {
-        throw new Error(`Script execution failed: ${error}`)
+        throw new Error(`Script execution failed: ${error instanceof ExpressionError ? error.message : error}`)
       }
     }
 
-    // JavaScript 执行
-    const fn = new Function('inputs', `'use strict';\n${code}`)
-    const result = await fn(context.inputs)
-    return { outputs: result ?? null }
+    // DSL expression execution (replaces new Function)
+    try {
+      const result = evaluate(code, { inputs: context.inputs })
+      return { outputs: result ?? null }
+    } catch (error) {
+      throw new Error(`Script execution failed: ${error instanceof ExpressionError ? error.message : error}`)
+    }
   },
 }
 
-// ── Human Approval Node ──
+// ── Human Approval Node (REQ-023) ──
 export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
   type: 'core.human-approval',
   version: 1,
@@ -263,7 +284,10 @@ export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
   configSchema: {
     type: 'object',
     additionalProperties: false,
+    required: ['action', 'reason'],
     properties: {
+      action: { type: 'string', minLength: 1 },
+      reason: { type: 'string', minLength: 1 },
       message: { type: 'string' },
       approvers: { type: 'array', items: { type: 'string' } },
     },
@@ -271,18 +295,42 @@ export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
   inputSchema: { type: 'object' },
   outputSchema: { type: 'object' },
   outputPorts: ['approved', 'rejected'],
-  capabilities: [],
+  requiredOutputPorts: ['approved', 'rejected'],
+  capabilities: ['dsh.approval.request'],
   retry: 'never',
+  execution: 'human-wait',
   async execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult> {
-    // 标记为需要审批
+    const { action, reason } = context.config as { action: string; reason: string }
+    const token = `${context.nodeId}:approval`
+
+    if (!context.services?.approvals) {
+      // 无审批网关时默认批准（兼容模式）
+      return {
+        outputs: { outcome: 'allowed-once', approved: true, token },
+        selectedPorts: ['approved'],
+      }
+    }
+
+    const outcome = await context.services.approvals.request({
+      runId: context.nodeId,
+      nodeId: context.nodeId,
+      token,
+      action,
+      reason,
+      details: context.inputs,
+      signal: context.signal,
+      owner: context.owner,
+    })
+
+    const approved = outcome === 'allowed-once'
     return {
-      outputs: { needsApproval: true, input: context.inputs },
-      selectedPorts: ['approved'], // 默认批准
+      outputs: { outcome, approved, token },
+      selectedPorts: [approved ? 'approved' : 'rejected'],
     }
   },
 }
 
-// ── Subworkflow Node ──
+// ── Subworkflow Node (REQ-026) ──
 export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
   type: 'core.subworkflow',
   version: 1,
@@ -292,9 +340,10 @@ export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
   configSchema: {
     type: 'object',
     additionalProperties: false,
-    required: ['workflowId'],
+    required: ['workflowId', 'revision'],
     properties: {
       workflowId: { type: 'string' },
+      revision: { type: 'number', minimum: 1 },
       passThrough: { type: 'boolean' },
     },
   },
@@ -302,11 +351,33 @@ export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
   outputSchema: { type: 'object' },
   outputPorts: ['success', 'error'],
   capabilities: ['dsh.workflows.execute'],
+  dependencyKinds: ['workflow'],
   retry: 'safe',
   async execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult> {
-    const { workflowId } = context.config as { workflowId: string }
-    // 子工作流执行由引擎处理
-    return { outputs: { subworkflowId: workflowId, input: context.inputs } }
+    const { workflowId, revision } = context.config as { workflowId: string; revision: number }
+    if (!revision || revision < 1) {
+      throw new Error(`Subworkflow revision must be a positive integer, got ${revision}`)
+    }
+
+    if (!context.services?.subworkflows) {
+      // 无子工作流网关时返回引用信息
+      return { outputs: { subworkflowId: workflowId, revision, input: context.inputs } }
+    }
+
+    const result = await context.services.subworkflows.execute({
+      parentRunId: context.nodeId,
+      nodeId: context.nodeId,
+      invocationId: `${context.nodeId}:subworkflow`,
+      templateId: workflowId,
+      revision,
+      inputs: context.inputs,
+      depth: 0,
+      depthLimit: 8,
+      signal: context.signal,
+      owner: context.owner,
+    })
+
+    return { outputs: { runId: result.runId, outputs: result.outputs } }
   },
 }
 
@@ -325,6 +396,8 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
       itemVariable: { type: 'string' },
       indexVariable: { type: 'string' },
       batchSize: { type: 'number' },
+      maxConcurrency: { type: 'number' },
+      maxIterations: { type: 'number' },
     },
   },
   inputSchema: { type: 'object' },
@@ -333,11 +406,19 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
   capabilities: [],
   retry: 'safe',
   async execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult> {
-    const { arrayPath = 'items', batchSize = 1 } = context.config as any
+    const { arrayPath = 'items', batchSize = 1, maxConcurrency, maxIterations } = context.config as any
     const array = (context.inputs as any)[arrayPath] || []
+    const limitedArray = maxIterations !== undefined ? array.slice(0, maxIterations) : array
     return {
-      outputs: { array, batchSize, totalItems: array.length },
-      selectedPorts: array.length > 0 ? ['body'] : ['done'],
+      outputs: {
+        array: limitedArray,
+        batchSize,
+        maxConcurrency,
+        maxIterations,
+        totalItems: limitedArray.length,
+        results: [], // placeholder for engine to fill
+      },
+      selectedPorts: limitedArray.length > 0 ? ['body'] : ['done'],
     }
   },
 }

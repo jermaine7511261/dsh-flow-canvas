@@ -1,6 +1,7 @@
 /**
  * dsh-flow-canvas — Core nodes (plain JS).
  */
+var expression = require('./expression')
 var startNodeDefinition = {
   type: 'core.start', version: 1, title: '开始', description: '验证并暴露工作流输入',
   role: 'start',
@@ -59,11 +60,12 @@ var toolNodeDefinition = {
   configSchema: { type: 'object', required: ['toolName'], properties: { toolName: { type: 'string' }, args: { type: 'object' } } },
   inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
   outputPorts: ['success', 'error'],
-  capabilities: ['dsh.tools.execute'], retry: 'safe',
+  capabilities: ['dsh.tools.execute'], dependencyKinds: ['capability'], retry: 'safe',
+  execution: 'activity',
   async execute(ctx) {
     var toolName = ctx.config.toolName, args = ctx.config.args || {}
-    if (!ctx.toolGateway) throw new Error('Tool gateway not available')
-    var result = await ctx.toolGateway.execute({ runId: ctx.nodeId, nodeId: ctx.nodeId, name: toolName, input: Object.assign({}, args, ctx.inputs), signal: ctx.signal })
+    if (!ctx.services || !ctx.services.tools) throw new Error('Tool gateway not available')
+    var result = await ctx.services.tools.execute({ runId: ctx.nodeId, nodeId: ctx.nodeId, name: toolName, input: Object.assign({}, args, ctx.inputs), signal: ctx.signal })
     return { outputs: result }
   },
 }
@@ -76,8 +78,8 @@ var agentNodeDefinition = {
   outputPorts: ['success', 'error'],
   capabilities: ['dsh.subagents.execute'], retry: 'safe',
   async execute(ctx) {
-    if (!ctx.agentGateway) throw new Error('Agent gateway not available')
-    var result = await ctx.agentGateway.execute({ runId: ctx.nodeId, nodeId: ctx.nodeId, provider: ctx.config.provider, prompt: ctx.config.prompt, signal: ctx.signal })
+    if (!ctx.services || !ctx.services.agents) throw new Error('Agent gateway not available')
+    var result = await ctx.services.agents.execute({ runId: ctx.nodeId, nodeId: ctx.nodeId, provider: ctx.config.provider, prompt: ctx.config.prompt, signal: ctx.signal })
     return { outputs: result }
   },
 }
@@ -90,9 +92,12 @@ var scriptNodeDefinition = {
   outputPorts: ['success'],
   capabilities: [], retry: 'idempotent',
   async execute(ctx) {
-    var fn = new Function('inputs', "'use strict';\n" + ctx.config.code)
-    var result = await fn(ctx.inputs)
-    return { outputs: result || null }
+    try {
+      var result = expression.evaluate(ctx.config.code, { inputs: ctx.inputs })
+      return { outputs: result || null }
+    } catch (error) {
+      throw new Error('Script execution failed: ' + (error.message || error))
+    }
   },
 }
 
@@ -103,6 +108,7 @@ var humanApprovalNodeDefinition = {
   inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
   outputPorts: ['approved', 'rejected'],
   capabilities: [], retry: 'never',
+  execution: 'human-wait',
   async execute(ctx) {
     return { outputs: { needsApproval: true, input: ctx.inputs }, selectedPorts: ['approved'] }
   },
@@ -154,9 +160,27 @@ function createNodeRegistry() {
   return registry
 }
 
+
+
+function resolveNodeDefinition(type) {
+  // Support both 'core.start' and 'core.start@1' formats
+  var baseType = type.includes('@') ? type.split('@')[0] : type
+  var version = type.includes('@') ? parseInt(type.split('@')[1]) : null
+  var def = registry.get(baseType)
+  if (!def) return null
+  if (version !== null && def.version !== version) return null
+  return def
+}
+
+function listNodeDefinitions() {
+  return Array.from(registry.values()).map(function(d) {
+    return { type: d.type + '@' + d.version, title: d.title, description: d.description, role: d.role, capabilities: d.capabilities }
+  })
+}
+
 module.exports = {
   startNodeDefinition, endNodeDefinition, conditionNodeDefinition,
   toolNodeDefinition, agentNodeDefinition, scriptNodeDefinition,
   humanApprovalNodeDefinition, subworkflowNodeDefinition,
-  foreachNodeDefinition, parallelNodeDefinition, createNodeRegistry
+  foreachNodeDefinition, parallelNodeDefinition, createNodeRegistry, resolveNodeDefinition, listNodeDefinitions
 }

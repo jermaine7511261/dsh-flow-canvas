@@ -1,6 +1,11 @@
 /**
  * dsh-flow-canvas — SQLite persistence layer.
  * 替换文件系统存储，支持工作流模板版本化、执行历史、检查点。
+ * 
+ * REQ-032: SQLite 持久化
+ * - WAL 模式
+ * - workflow_drafts / workflow_revisions / workflow_runs / workflow_run_events 表
+ * - 事务提交支持
  */
 const { existsSync, mkdirSync } = require('node:fs')
 const { join } = require('node:path')
@@ -20,15 +25,16 @@ function initDatabase(storagePath) {
     db = new Database(dbPath)
     db.pragma('journal_mode = WAL')
     db.pragma('foreign_keys = ON')
+    db.pragma('busy_timeout = 5000')
   } catch (e) {
     // fallback: 使用 JSON 文件存储（兼容模式）
     console.log('[dsh-flow-canvas] SQLite not available, using JSON file storage')
     db = initJsonStorage(storagePath); return db
   }
 
-  // 创建表
+  // 创建表 - REQ-032: workflow_drafts / workflow_revisions / workflow_runs / workflow_run_events
   db.exec(`
-    CREATE TABLE IF NOT EXISTS workflows (
+    CREATE TABLE IF NOT EXISTS workflow_drafts (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
@@ -37,15 +43,15 @@ function initDatabase(storagePath) {
       updated_at INTEGER DEFAULT (unixepoch() * 1000)
     );
 
-    CREATE TABLE IF NOT EXISTS workflow_versions (
+    CREATE TABLE IF NOT EXISTS workflow_revisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       workflow_id TEXT NOT NULL,
-      version INTEGER NOT NULL,
+      revision INTEGER NOT NULL,
       template JSON NOT NULL,
       semantic_hash TEXT,
       published_at INTEGER DEFAULT (unixepoch() * 1000),
-      FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
-      UNIQUE(workflow_id, version)
+      FOREIGN KEY (workflow_id) REFERENCES workflow_drafts(id) ON DELETE CASCADE,
+      UNIQUE(workflow_id, revision)
     );
 
     CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -57,18 +63,22 @@ function initDatabase(storagePath) {
       node_states JSON,
       result JSON,
       error TEXT,
-      FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+      FOREIGN KEY (workflow_id) REFERENCES workflow_drafts(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+    CREATE TABLE IF NOT EXISTS workflow_run_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id TEXT NOT NULL,
-      node_id TEXT NOT NULL,
-      status TEXT,
-      output JSON,
+      event_type TEXT NOT NULL,
+      node_id TEXT,
+      data JSON,
       created_at INTEGER DEFAULT (unixepoch() * 1000),
       FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
     );
+
+    CREATE INDEX IF NOT EXISTS idx_workflow_revisions_workflow_id ON workflow_revisions(workflow_id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_id ON workflow_runs(workflow_id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_run_events_run_id ON workflow_run_events(run_id);
   `)
 
   return { type: 'sqlite', db }
@@ -106,11 +116,15 @@ function saveWorkflow(template) {
   const id = template.metadata.id
 
   if (db?.type === 'sqlite') {
-    const stmt = db.db.prepare(`
-      INSERT OR REPLACE INTO workflows (id, name, description, template, updated_at)
-      VALUES (?, ?, ?, ?, unixepoch() * 1000)
-    `)
-    stmt.run(id, template.metadata.name, template.metadata.description || '', JSON.stringify(template))
+    // 事务提交支持
+    const transaction = db.db.transaction(() => {
+      const stmt = db.db.prepare(`
+        INSERT OR REPLACE INTO workflow_drafts (id, name, description, template, updated_at)
+        VALUES (?, ?, ?, ?, unixepoch() * 1000)
+      `)
+      stmt.run(id, template.metadata.name, template.metadata.description || '', JSON.stringify(template))
+    })
+    transaction()
   } else {
     // JSON fallback
     const { writeFileSync } = require('node:fs')
@@ -123,7 +137,7 @@ function saveWorkflow(template) {
 
 function loadWorkflow(id) {
   if (db?.type === 'sqlite') {
-    const row = db.db.prepare('SELECT template FROM workflows WHERE id = ?').get(id)
+    const row = db.db.prepare('SELECT template FROM workflow_drafts WHERE id = ?').get(id)
     return row ? JSON.parse(row.template) : null
   } else {
     return db.workflows.get(id) || null
@@ -132,7 +146,7 @@ function loadWorkflow(id) {
 
 function listWorkflows() {
   if (db?.type === 'sqlite') {
-    const rows = db.db.prepare('SELECT id, name, description, created_at, updated_at FROM workflows ORDER BY updated_at DESC').all()
+    const rows = db.db.prepare('SELECT id, name, description, created_at, updated_at FROM workflow_drafts ORDER BY updated_at DESC').all()
     return rows.map(r => ({ ...r, template: undefined }))
   } else {
     return [...db.workflows.values()].map(w => ({
@@ -145,7 +159,11 @@ function listWorkflows() {
 
 function deleteWorkflow(id) {
   if (db?.type === 'sqlite') {
-    db.db.prepare('DELETE FROM workflows WHERE id = ?').run(id)
+    // 事务提交支持
+    const transaction = db.db.transaction(() => {
+      db.db.prepare('DELETE FROM workflow_drafts WHERE id = ?').run(id)
+    })
+    transaction()
   } else {
     db.workflows.delete(id)
   }
@@ -158,20 +176,24 @@ function publishVersion(template) {
   const id = template.metadata.id
 
   if (db?.type === 'sqlite') {
-    // 获取下一个版本号
-    const last = db.db.prepare('SELECT MAX(version) as v FROM workflow_versions WHERE workflow_id = ?').get(id)
-    const version = (last?.v || 0) + 1
+    // 事务提交支持
+    const transaction = db.db.transaction(() => {
+      // 获取下一个版本号
+      const last = db.db.prepare('SELECT MAX(revision) as v FROM workflow_revisions WHERE workflow_id = ?').get(id)
+      const version = (last?.v || 0) + 1
 
-    // 计算语义哈希
-    const { createHash } = require('node:crypto')
-    const hash = createHash('sha256').update(JSON.stringify(template.spec)).digest('hex').slice(0, 16)
+      // 计算语义哈希
+      const { createHash } = require('node:crypto')
+      const hash = createHash('sha256').update(JSON.stringify(template.spec)).digest('hex').slice(0, 16)
 
-    db.db.prepare(`
-      INSERT INTO workflow_versions (workflow_id, version, template, semantic_hash)
-      VALUES (?, ?, ?, ?)
-    `).run(id, version, JSON.stringify(template), hash)
+      db.db.prepare(`
+        INSERT INTO workflow_revisions (workflow_id, revision, template, semantic_hash)
+        VALUES (?, ?, ?, ?)
+      `).run(id, version, JSON.stringify(template), hash)
 
-    return { version, semanticHash: hash }
+      return { version, semanticHash: hash }
+    })
+    return transaction()
   } else {
     // JSON fallback
     const { writeFileSync } = require('node:fs')
@@ -182,7 +204,7 @@ function publishVersion(template) {
 
 function loadVersion(id, version) {
   if (db?.type === 'sqlite') {
-    const row = db.db.prepare('SELECT template FROM workflow_versions WHERE workflow_id = ? AND version = ?').get(id, version)
+    const row = db.db.prepare('SELECT template FROM workflow_revisions WHERE workflow_id = ? AND revision = ?').get(id, version)
     return row ? JSON.parse(row.template) : null
   } else {
     const { readFileSync, existsSync } = require('node:fs')
@@ -193,9 +215,9 @@ function loadVersion(id, version) {
 
 function listVersions(id) {
   if (db?.type === 'sqlite') {
-    return db.db.prepare('SELECT version, semantic_hash, published_at FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC').all(id)
+    return db.db.prepare('SELECT revision, semantic_hash, published_at FROM workflow_revisions WHERE workflow_id = ? ORDER BY revision DESC').all(id)
   } else {
-    return [{ version: 1, semantic_hash: 'json-fallback' }]
+    return [{ revision: 1, semantic_hash: 'json-fallback' }]
   }
 }
 
@@ -203,11 +225,15 @@ function listVersions(id) {
 
 function saveRun(run) {
   if (db?.type === 'sqlite') {
-    db.db.prepare(`
-      INSERT OR REPLACE INTO workflow_runs (id, workflow_id, status, started_at, completed_at, node_states, result, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(run.runId, run.workflowId, run.status, run.startedAt, run.completedAt || null,
-      JSON.stringify(Object.fromEntries(run.nodeStates || [])), JSON.stringify(run.result || {}), run.error || null)
+    // 事务提交支持
+    const transaction = db.db.transaction(() => {
+      db.db.prepare(`
+        INSERT OR REPLACE INTO workflow_runs (id, workflow_id, status, started_at, completed_at, node_states, result, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(run.runId, run.workflowId, run.status, run.startedAt, run.completedAt || null,
+        JSON.stringify(Object.fromEntries(run.nodeStates || [])), JSON.stringify(run.result || {}), run.error || null)
+    })
+    transaction()
   }
 }
 
@@ -231,20 +257,24 @@ function listRuns(workflowId, limit = 50) {
   return []
 }
 
-// ── 检查点 ──
+// ── 事件日志 ──
 
-function saveCheckpoint(runId, nodeId, status, output) {
+function saveEvent(runId, eventType, nodeId, data) {
   if (db?.type === 'sqlite') {
-    db.db.prepare(`
-      INSERT INTO workflow_checkpoints (run_id, node_id, status, output)
-      VALUES (?, ?, ?, ?)
-    `).run(runId, nodeId, status, JSON.stringify(output || {}))
+    // 事务提交支持
+    const transaction = db.db.transaction(() => {
+      db.db.prepare(`
+        INSERT INTO workflow_run_events (run_id, event_type, node_id, data)
+        VALUES (?, ?, ?, ?)
+      `).run(runId, eventType, nodeId || null, JSON.stringify(data || {}))
+    })
+    transaction()
   }
 }
 
-function loadCheckpoints(runId) {
+function loadEvents(runId) {
   if (db?.type === 'sqlite') {
-    return db.db.prepare('SELECT * FROM workflow_checkpoints WHERE run_id = ? ORDER BY created_at ASC').all(runId)
+    return db.db.prepare('SELECT * FROM workflow_run_events WHERE run_id = ? ORDER BY created_at ASC').all(runId)
   }
   return []
 }
@@ -261,6 +291,6 @@ module.exports = {
   initDatabase, saveWorkflow, loadWorkflow, listWorkflows, deleteWorkflow,
   publishVersion, loadVersion, listVersions,
   saveRun, loadRun, listRuns,
-  saveCheckpoint, loadCheckpoints,
+  saveEvent, loadEvents,
   close,
 }

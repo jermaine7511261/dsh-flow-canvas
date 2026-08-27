@@ -1,6 +1,8 @@
 /**
  * dsh-flow-canvas — DAG Workflow Engine (plain JS).
  */
+const { snapshotJsonValue } = require('./json.cjs')
+
 class DagWorkflowEngine {
   constructor(compiled, options) {
     this.compiled = compiled
@@ -35,24 +37,44 @@ class DagWorkflowEngine {
         if (so) { let v = so; for (const p of binding.output.path) v = v?.[p]; inputs[key] = v }
       }
     }
+    // Create services object with gateways
+    const services = {
+      tools: this.opts.toolGateway,
+      agents: this.opts.agentGateway,
+      approvals: this.opts.approvalGateway,
+      secrets: this.opts.secretGateway,
+    }
+    
     return await definition.execute({
       nodeId, config: template.with || {}, inputs,
       workflowInputs: this.run.result || {},
       signal: this.ac.signal,
-      toolGateway: this.opts.toolGateway,
-      agentGateway: this.opts.agentGateway,
+      services,
     })
   }
 
   _getReady() {
     const ready = []
     for (const nodeId of this.compiled.order) {
+      if (this.run.nodeStates.get(nodeId)?.status !== 'ready') continue
+      ready.push(nodeId)
+    }
+    return ready
+  }
+
+  _updateReady() {
+    for (const nodeId of this.compiled.order) {
       if (this.run.nodeStates.get(nodeId)?.status !== 'pending') continue
       const cn = this.compiled.nodes.get(nodeId)
       if (!cn) continue
-      if (cn.incoming.every(e => { const s = this.run.nodeStates.get(e.source)?.status; return s === 'completed' || s === 'skipped' })) ready.push(nodeId)
+      const allPredecessorsComplete = cn.incoming.every(e => {
+        const s = this.run.nodeStates.get(e.source)?.status
+        return s === 'succeeded' || s === 'skipped' || s === 'failed' || s === 'cancelled'
+      })
+      if (allPredecessorsComplete) {
+        this.run.nodeStates.set(nodeId, { nodeId, status: 'ready' })
+      }
     }
-    return ready
   }
 
   async execute(inputs) {
@@ -65,6 +87,7 @@ class DagWorkflowEngine {
     try {
       for (let iter = 0; iter < 1000; iter++) {
         if (this.ac.signal.aborted) { this.run.status = 'cancelled'; break }
+        this._updateReady()
         const ready = this._getReady()
         if (ready.length === 0) break
         const batch = ready.slice(0, this.opts.maxConcurrentNodes)
@@ -75,8 +98,10 @@ class DagWorkflowEngine {
           this._emit()
           try {
             const result = await this._executeNode(nodeId)
-            this.nodeOutputs.set(nodeId, result.outputs || {})
-            this.run.nodeStates.set(nodeId, { nodeId, status: 'completed', startedAt: this.run.nodeStates.get(nodeId)?.startedAt, completedAt: Date.now() })
+            // Use lossless JSON snapshot to prevent prototype pollution (REQ-028)
+            const frozenOutputs = snapshotJsonValue(result.outputs || {})
+            this.nodeOutputs.set(nodeId, frozenOutputs)
+            this.run.nodeStates.set(nodeId, { nodeId, status: 'succeeded', startedAt: this.run.nodeStates.get(nodeId)?.startedAt, completedAt: Date.now() })
             this._log(nodeId, 'Completed')
             nodeRuns++
           } catch (err) {
